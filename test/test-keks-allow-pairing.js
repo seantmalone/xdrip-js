@@ -66,3 +66,27 @@ describe('Transmitter allowPairing option', () => {
     expect(tx.plugin.allowPairing).to.equal(true);
   });
 });
+
+describe('Transmitter pairingBlocked event', () => {
+  afterEach(() => { Plugin.instance = null; });
+
+  it('emits pairingBlocked when the plugin refuses to pair', async () => {
+    const tx = new Transmitter('1234', () => [], false, KEY, 'AA:BB:CC:DD:EE:01', { allowPairing: false });
+    tx.authenticateAndPairG7 = async () => { throw new Error('Pairing not allowed: no valid key for this sensor'); };
+    tx.disconnect = async () => {};
+    const seen = [];
+    tx.on('pairingBlocked', (d) => seen.push(d));
+    await tx.isReady('AA:BB:CC:DD:EE:01');
+    expect(seen).to.deep.equal([{ id: '1234', address: 'AA:BB:CC:DD:EE:01' }]);
+  });
+
+  it('does not emit pairingBlocked for other errors', async () => {
+    const tx = new Transmitter('1234', () => [], false, KEY, 'AA:BB:CC:DD:EE:01', { allowPairing: false });
+    tx.authenticateAndPairG7 = async () => { throw new Error('timeout'); };
+    tx.disconnect = async () => {};
+    const seen = [];
+    tx.on('pairingBlocked', (d) => seen.push(d));
+    await tx.isReady('AA:BB:CC:DD:EE:01');
+    expect(seen).to.deep.equal([]);
+  });
+});
