@@ -90,3 +90,53 @@ describe('Transmitter pairingBlocked event', () => {
     expect(seen).to.deep.equal([]);
   });
 });
+
+// Seen on a real G7 (fleet collector, 2026-11-11): the AuthStatus after our
+// challenge reply never arrived, the plugin started a new round, and re-sent
+// the PREVIOUS round's challenge reply (stale context.challenge) without
+// waiting for the sensor's new challenge. The sensor answered "not
+// authenticated", the plugin wiped the saved key, and fleet mode reported
+// the (valid) key as rejected.
+describe('KEKS plugin: re-authenticating within one connection', () => {
+  afterEach(() => { Plugin.instance = null; });
+
+  it('waits for the new challenge instead of re-sending the old reply', () => {
+    const plugin = Plugin.getInstance('1234');
+    plugin.setAllowPairing(false);
+    plugin.setPersistence(2, KEY);
+    plugin.amConnected();
+    plugin.context.challenge = Buffer.alloc(8, 0x11);     // left over from the last round
+    const sent = plugin.aNext();                           // RoundStart -> RequestAuth: 02 ...
+    expect(Buffer.from(sent[0])[0]).to.equal(0x02);
+    expect(plugin.context.challenge).to.equal(null);
+    const next = plugin.aNext();                           // no new challenge yet
+    expect(!next || !next[0] || Buffer.from(next[0])[0] !== 0x04).to.equal(true);
+  });
+
+  it('keeps the configured key after a plain "not authenticated" (pairing disallowed)', () => {
+    const plugin = Plugin.getInstance('1234');
+    plugin.setAllowPairing(false);
+    plugin.setPersistence(2, KEY);
+    plugin.amConnected();
+    plugin.changeState(Plugin.ChallengeReply);
+    plugin.receivedResponse(Buffer.from([0x05, 0x00, 0x00]));    // not authenticated
+    plugin.changeState(Plugin.RoundStart);
+    const sent = plugin.aNext();                                  // retries auth, no J-PAKE
+    expect(Buffer.from(sent[0])[0]).to.equal(0x02);
+    expect(plugin.state).to.equal(Plugin.RequestAuth);
+  });
+
+  it('stops retrying after a few "not authenticated" answers', () => {
+    const plugin = Plugin.getInstance('1234');
+    plugin.setAllowPairing(false);
+    plugin.setPersistence(2, KEY);
+    plugin.amConnected();
+    for (let i = 0; i < 3; i += 1) {
+      plugin.changeState(Plugin.ChallengeReply);
+      plugin.receivedResponse(Buffer.from([0x05, 0x00, 0x00]));
+      plugin.changeState(Plugin.RoundStart);
+      if (i < 2) plugin.aNext();
+    }
+    expect(() => plugin.aNext()).to.throw(/pairing not allowed/i);
+  });
+});
